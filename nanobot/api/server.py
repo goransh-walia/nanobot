@@ -51,7 +51,7 @@ API_CHAT_ID = "default"
 _AGENT_LOOP_KEY = web.AppKey[Any]("agent_loop")
 _MODEL_NAME_KEY = web.AppKey[str]("model_name")
 _REQUEST_TIMEOUT_KEY = web.AppKey[float]("request_timeout")
-_SESSION_LOCKS_KEY = web.AppKey[dict[str, asyncio.Lock]]("session_locks")
+_AGENT_LOCK_KEY = web.AppKey[asyncio.Lock]("agent_lock")
 _PREPARE_AGENT_KEY = web.AppKey[Callable[[], Awaitable[None]] | None]("prepare_agent")
 _REQUEST_ID_KEY = web.RequestKey[str]("request_id")
 
@@ -319,8 +319,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response | web.St
     session_key = f"api:{session_id}" if session_id else API_SESSION_KEY
     # Keep the existing history identity; derive its route without normalizing the ID.
     chat_id = session_key.removeprefix("api:")
-    session_locks: dict[str, asyncio.Lock] = request.app[_SESSION_LOCKS_KEY]
-    session_lock = session_locks.setdefault(session_key, asyncio.Lock())
+    agent_lock = request.app[_AGENT_LOCK_KEY]
 
     logger.info(
         "API request session_key={} media={} text={} stream={}",
@@ -354,7 +353,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response | web.St
         async def _run() -> None:
             nonlocal stream_failed
             try:
-                async with session_lock:
+                async with agent_lock:
                     async with asyncio.timeout(timeout_s):
                         await _prepare_agent(request.app)
                         response = await agent_loop.process_direct(
@@ -397,7 +396,7 @@ async def handle_chat_completions(request: web.Request) -> web.Response | web.St
     # -- non-streaming path (original logic) --
     usage_capture = _UsageCaptureHook()
     try:
-        async with session_lock:
+        async with agent_lock:
             try:
                 async with asyncio.timeout(timeout_s):
                     await _prepare_agent(request.app)
@@ -476,7 +475,7 @@ def create_app(
     app[_AGENT_LOOP_KEY] = agent_loop
     app[_MODEL_NAME_KEY] = model_name
     app[_REQUEST_TIMEOUT_KEY] = request_timeout
-    app[_SESSION_LOCKS_KEY] = {}  # per-user locks, keyed by session_key
+    app[_AGENT_LOCK_KEY] = asyncio.Lock()
     app[_PREPARE_AGENT_KEY] = prepare_agent
 
     @web.middleware
